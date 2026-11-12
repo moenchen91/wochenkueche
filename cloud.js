@@ -15,10 +15,17 @@ function cloudMessage(message, error = false) {
 }
 function cloudGate(show) { document.getElementById('cloudGate').hidden = !show; }
 function cloudInit() {
+  let clientId = '', email = '';
   try {
-    document.getElementById('clientId').value = localStorage.getItem(CLOUD_CLIENT_KEY) || '';
-    document.getElementById('accountEmail').value = localStorage.getItem(CLOUD_EMAIL_KEY) || '';
+    clientId = localStorage.getItem(CLOUD_CLIENT_KEY) || '';
+    email = localStorage.getItem(CLOUD_EMAIL_KEY) || '';
   } catch (_) {}
+  const config = window.WOCHENKUECHE_CONFIG || {};
+  document.getElementById('clientId').value = config.clientId?.trim() || clientId;
+  document.getElementById('accountEmail').value = config.accountEmail?.trim() || email;
+  if (config.clientId && config.accountEmail) {
+    cloudMessage('Konfiguration geladen. Tippe auf „Mit dieser Adresse verbinden“.');
+  }
   cloudGate(true);
 }
 function cloudSwitch() {
@@ -49,7 +56,7 @@ function cloudValidate(data) {
   data.settings ||= { lunch: true, cake: true, dinner: true };
   return data;
 }
-function cloudConnect() {
+function cloudConnect(mode = 'target') {
   const clientId = document.getElementById('clientId').value.trim();
   const expectedEmail = document.getElementById('accountEmail').value.trim().toLowerCase();
   if (!/^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(clientId)) {
@@ -68,7 +75,8 @@ function cloudConnect() {
   cloudMessage('Google-Anmeldung läuft …');
   document.getElementById('firstCloud').hidden = true;
   const client = google.accounts.oauth2.initTokenClient({
-    client_id: clientId, scope: CLOUD_SCOPE, login_hint: expectedEmail,
+    client_id: clientId, scope: CLOUD_SCOPE,
+    ...(mode === 'target' ? { login_hint: expectedEmail } : {}),
     callback: async response => {
       if (response.error || !response.access_token) {
         return cloudMessage('Anmeldung fehlgeschlagen: ' + (response.error || 'kein Token'), true);
@@ -80,7 +88,7 @@ function cloudConnect() {
         if (!actualEmail) throw new Error('Google Drive hat keine Konto-Adresse zurückgegeben. Zur Sicherheit werden keine Daten geöffnet.');
         if (actualEmail !== expectedEmail) {
           cloudToken = '';
-          throw new Error('Google hat ' + actualEmail + ' angemeldet, erwartet wird ' + expectedEmail + '. Wähle beim nächsten Versuch „Anderes Konto verwenden“.');
+          throw new Error('Google hat ' + actualEmail + ' angemeldet, erwartet wird ' + expectedEmail + '. Wähle beim nächsten Versuch das richtige Konto im Google-Fenster.');
         }
         cloudAccount = actualEmail;
         await cloudOpen();
@@ -88,7 +96,9 @@ function cloudConnect() {
     },
     error_callback: e => cloudMessage('Anmeldung abgebrochen: ' + (e.message || e.type), true)
   });
-  client.requestAccessToken({ prompt: 'select_account' });
+  // The target flow picks the requested account when it has a Google session.
+  // The alternate flow deliberately omits login_hint and displays the chooser.
+  client.requestAccessToken({ prompt: mode === 'target' ? 'consent' : 'select_account consent' });
 }
 async function cloudList() {
   const q = new URLSearchParams({
