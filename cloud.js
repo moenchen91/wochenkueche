@@ -2,8 +2,10 @@
 const CLOUD_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const CLOUD_NAME = 'wochenkueche-data.json';
 const CLOUD_CLIENT_KEY = 'wochenkueche-google-client-id'; // configuration only
+const CLOUD_EMAIL_KEY = 'wochenkueche-google-email'; // preferred account, not recipe data
 let cloudToken = '', cloudId = '', cloudVersion = '', cloudReady = false;
 let cloudPending = false, cloudWriting = false, cloudBlocked = false;
+let cloudAccount = '';
 
 function cloudMessage(message, error = false) {
   const el = document.getElementById('cloudStatus');
@@ -13,8 +15,20 @@ function cloudMessage(message, error = false) {
 }
 function cloudGate(show) { document.getElementById('cloudGate').hidden = !show; }
 function cloudInit() {
-  try { document.getElementById('clientId').value = localStorage.getItem(CLOUD_CLIENT_KEY) || ''; } catch (_) {}
+  try {
+    document.getElementById('clientId').value = localStorage.getItem(CLOUD_CLIENT_KEY) || '';
+    document.getElementById('accountEmail').value = localStorage.getItem(CLOUD_EMAIL_KEY) || '';
+  } catch (_) {}
   cloudGate(true);
+}
+function cloudSwitch() {
+  if (cloudPending || cloudWriting) return alert('Bitte warte, bis die Änderungen in Google Drive gespeichert sind.');
+  cloudReady = false; cloudToken = ''; cloudId = ''; cloudVersion = ''; cloudAccount = '';
+  document.getElementById('firstCloud').hidden = true;
+  document.getElementById('recoverCloud').hidden = true;
+  s = load(); render(); cloudGate(true);
+  cloudMessage('Trage die gewünschte Google-Adresse ein und verbinde sie.');
+  document.getElementById('accountEmail').focus();
 }
 async function cloudAPI(url, options = {}) {
   const response = await fetch(url, {
@@ -37,23 +51,40 @@ function cloudValidate(data) {
 }
 function cloudConnect() {
   const clientId = document.getElementById('clientId').value.trim();
+  const expectedEmail = document.getElementById('accountEmail').value.trim().toLowerCase();
   if (!/^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(clientId)) {
     return cloudMessage('Bitte eine gültige Web-OAuth-Client-ID eingeben.', true);
   }
-  try { localStorage.setItem(CLOUD_CLIENT_KEY, clientId); } catch (_) {}
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(expectedEmail)) {
+    return cloudMessage('Bitte die Google-E-Mail-Adresse eingeben, in der deine Rezepte liegen sollen.', true);
+  }
+  try {
+    localStorage.setItem(CLOUD_CLIENT_KEY, clientId);
+    localStorage.setItem(CLOUD_EMAIL_KEY, expectedEmail);
+  } catch (_) {}
   if (!window.google?.accounts?.oauth2) {
     return cloudMessage('Google-Anmeldung konnte nicht geladen werden. Prüfe die Internetverbindung.', true);
   }
   cloudMessage('Google-Anmeldung läuft …');
   document.getElementById('firstCloud').hidden = true;
   const client = google.accounts.oauth2.initTokenClient({
-    client_id: clientId, scope: CLOUD_SCOPE,
+    client_id: clientId, scope: CLOUD_SCOPE, login_hint: expectedEmail,
     callback: async response => {
       if (response.error || !response.access_token) {
         return cloudMessage('Anmeldung fehlgeschlagen: ' + (response.error || 'kein Token'), true);
       }
       cloudToken = response.access_token;
-      try { await cloudOpen(); } catch (e) { cloudMessage(e.message, true); }
+      try {
+        const about = await (await cloudAPI('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)')).json();
+        const actualEmail = about.user?.emailAddress?.toLowerCase();
+        if (!actualEmail) throw new Error('Google Drive hat keine Konto-Adresse zurückgegeben. Zur Sicherheit werden keine Daten geöffnet.');
+        if (actualEmail !== expectedEmail) {
+          cloudToken = '';
+          throw new Error('Google hat ' + actualEmail + ' angemeldet, erwartet wird ' + expectedEmail + '. Wähle beim nächsten Versuch „Anderes Konto verwenden“.');
+        }
+        cloudAccount = actualEmail;
+        await cloudOpen();
+      } catch (e) { cloudMessage(e.message, true); }
     },
     error_callback: e => cloudMessage('Anmeldung abgebrochen: ' + (e.message || e.type), true)
   });
@@ -83,7 +114,7 @@ async function cloudOpen() {
   cloudId = file.id; cloudVersion = file.version;
   cloudReady = true; cloudBlocked = false; cloudPending = false;
   s = data; render(); cloudGate(false);
-  cloudMessage('Mit Google Drive verbunden · ' + s.recipes.length + ' Rezepte');
+  cloudMessage('Verbunden als ' + cloudAccount + ' · ' + s.recipes.length + ' Rezepte');
 }
 async function cloudRefresh() {
   if (!cloudReady || cloudWriting || cloudPending || cloudBlocked) return;
@@ -91,7 +122,7 @@ async function cloudRefresh() {
     const file = await cloudList();
     if (!file || file.id !== cloudId) throw new Error('Die gemeinsame Datendatei wurde entfernt oder ersetzt.');
     if (file.version !== cloudVersion) await cloudOpen();
-    else cloudMessage('Aktueller Stand · ' + s.recipes.length + ' Rezepte');
+    else cloudMessage('Aktueller Stand: ' + cloudAccount + ' · ' + s.recipes.length + ' Rezepte');
   } catch (e) { cloudMessage('Aktualisieren fehlgeschlagen: ' + e.message, true); }
 }
 function cloudOldData() {
@@ -114,7 +145,7 @@ async function cloudStart(importOld) {
     cloudId = file.id; cloudVersion = file.version;
     cloudReady = true; cloudBlocked = false;
     s = data; render(); cloudGate(false);
-    cloudMessage('Mit Google Drive verbunden · ' + s.recipes.length + ' Rezepte');
+    cloudMessage('Verbunden als ' + cloudAccount + ' · ' + s.recipes.length + ' Rezepte');
   } catch (e) { cloudMessage(e.message, true); }
 }
 async function cloudUpload(data) {
@@ -157,7 +188,7 @@ async function cloudFlush() {
       const updated = await cloudUpload(snapshot);
       cloudVersion = updated.version;
     }
-    if (!cloudBlocked) cloudMessage('In Google Drive gespeichert · ' + s.recipes.length + ' Rezepte');
+    if (!cloudBlocked) cloudMessage('In Google Drive gespeichert: ' + cloudAccount + ' · ' + s.recipes.length + ' Rezepte');
   } catch (e) {
     cloudBlocked = true; cloudPending = false; cloudGate(true);
     document.getElementById('firstCloud').hidden = true;
